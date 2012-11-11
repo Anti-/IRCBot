@@ -5,6 +5,7 @@ namespace IRCBot {
 		public GLib.Resolver objResolver;
 		public GLib.SocketClient objSocket;
 		public GLib.SocketConnection objConnection;
+		public Gee.ArrayList<string> lstArgumentBlackList;
 		public Gee.HashMap<string, string> mapConfig;
 		public string strNickname;
 		public string strLastCommandChannel;
@@ -13,42 +14,56 @@ namespace IRCBot {
 		private GLib.KeyFile objKeyFile;
 		
 		construct {
-			this.Config = new Gee.HashMap<string, string>();
+			this.lstArgumentBlackList = new Gee.ArrayList<string>();
+			this.mapConfig = new Gee.HashMap<string, string>();
 			this.objKeyFile = new GLib.KeyFile();
 			try {
-				this.Resolver = GLib.Resolver.get_default();
-				this.Socket = new GLib.SocketClient();
-				this.FileParser.load_from_file("Settings.conf", GLib.KeyFileFlags.NONE);
-				this.Config["Address"] = this.FileParser.get_value("Network", "Address");
-				this.Config["Channel"] = this.FileParser.get_value("Network", "Channel");
-				this.Config["Port"] = this.FileParser.get_value("Network", "Port");
-				this.Config["Real"] = this.FileParser.get_value("Bot", "Real");
-				this.Config["SSL"] = this.FileParser.get_value("Network", "SSL");
-				this.Config["User"] = this.FileParser.get_value("Bot", "User");
-				this.Nickname = this.FileParser.get_value("Bot", "Nick");
+				this.objResolver = GLib.Resolver.get_default();
+				this.objSocket = new GLib.SocketClient();
+				this.loadConfig();
 			} catch(GLib.Error objError){
 				Logger.Log(objError.message, Logger.LogLevel.Fatal);
 			}
 		}
 		
+		public void loadConfig(){
+			try {
+				this.objKeyFile.load_from_file("Settings.conf", GLib.KeyFileFlags.NONE);
+				this.mapConfig["Address"] = this.objKeyFile.get_value("Network", "Address");
+				this.mapConfig["Channel"] = this.objKeyFile.get_value("Network", "Channel");
+				this.mapConfig["Port"] = this.objKeyFile.get_value("Network", "Port");
+				this.mapConfig["Real"] = this.objKeyFile.get_value("Bot", "Real");
+				this.mapConfig["SSL"] = this.objKeyFile.get_value("Network", "SSL");
+				this.mapConfig["User"] = this.objKeyFile.get_value("Bot", "User");
+				this.strNickname = this.objKeyFile.get_value("Bot", "Nick");
+				string[] arrBlacklist = this.objKeyFile.get_value("Other", "ArgumentBlackList").split("|");
+				this.lstArgumentBlackList = new Gee.ArrayList<string>();
+				for(int intCount = 0; intCount < arrBlacklist.length; intCount++){
+					this.lstArgumentBlackList.add(arrBlacklist[intCount]);
+				}
+			} catch(GLib.Error objError){
+				Logger.Log(objError.message, Logger.LogLevel.Fatal);
+			}
+		}
+		
+		public Gee.ArrayList<string> ArgumentBlackList {
+			get { return this.lstArgumentBlackList; }
+		}
+		
 		public GLib.SocketConnection Connection {
 			get { return this.objConnection; }
-			set { this.objConnection = value; }
 		}
 		
 		public Gee.HashMap<string, string> Config {
 			get { return this.mapConfig; }
-			set { this.mapConfig = value; }
 		}
 		
 		public GLib.DataInputStream InputStream {
 			get { return this.objInputStream; }
-			set { this.objInputStream = value; }
 		}
-		
+
 		public string Nickname {
 			get { return this.strNickname; }
-			set { this.strNickname = value; }
 		}
 		
 		public string lastCommandChannel {
@@ -58,7 +73,6 @@ namespace IRCBot {
 		
 		public GLib.DataOutputStream OutputStream {
 			get { return this.objOutputStream; }
-			set { this.objOutputStream = value; }
 		}
 		
 		public GLib.KeyFile FileParser {
@@ -67,15 +81,12 @@ namespace IRCBot {
 		
 		public GLib.Resolver Resolver {
 			get { return this.objResolver; }
-			set { this.objResolver = value; }
 		}
 		
 		public GLib.SocketClient Socket {
 			get { return this.objSocket; }
-			set { this.objSocket = value; }
 		}
 		
-		// Method for building strings from string[]
 		public virtual string buildString(string[] arrData, int intStart = 3, bool blnCommand = false){
 			GLib.StringBuilder objStringBuild = new GLib.StringBuilder();
 			for(int intChar = intStart; intChar < arrData.length; intChar++){
@@ -84,42 +95,54 @@ namespace IRCBot {
 			return objStringBuild.str;
 		}
 		
-		// TODO: Add error handling (i.e nickname already in use, maybe can be done in parseData)
 		public virtual void changeNick(string strNickname){
 			this.sendData("NICK " + strNickname);
 		}
 		
-		// TODO: Add error handling (i.e invite only, maybe can be done in parseData)
+		public string googleTranslate(string strText, string strFromLang = "en", string strToLang = "es") throws GLib.Error {
+			string strUri = "http://ajax.googleapis.com/ajax/services/language/translate";
+			string strVersion = "1.0";
+			string strFullUri = "%s?v=%s&q=%s&langpair=%s|%s".printf(strUri, strVersion, Soup.URI.encode(strText, null), strFromLang, strToLang);
+			var objSession = new Soup.SessionAsync();
+			var objMessage = new Soup.Message("GET", strFullUri);
+			objSession.send_message(objMessage);
+			Json.Parser objParser = new Json.Parser();
+			objParser.load_from_data((string)objMessage.response_body.flatten().data, -1);
+			var objRoot = objParser.get_root().get_object();
+			string strTranslated = objRoot.get_object_member("responseData").get_string_member("translatedText");
+			return strTranslated;
+		}
+		
 		public virtual void joinChannel(string strChannel){
 			this.sendData("JOIN " + strChannel);
 		}
 		
+		public virtual void handleCommand(string strFrom, string strMessage){
+			Logger.Log("handleCommand must be overridden in a sub-class!", Logger.LogLevel.Fatal);
+		}
+		
 		public virtual void netConnect(string strHost, string intPort){
-			bool blnSSL = this.Config["SSL"] == "true" ? true : false;
+			bool blnSSL = this.mapConfig["SSL"] == "true" ? true : false;
 			Logger.Log("Connecting to " + strHost + ":" + (blnSSL ? "+" : "") + intPort);
 			GLib.InetAddress strAddress;
 			GLib.List<GLib.InetAddress> objAddresses;
 			try {
-				objAddresses = this.objResolver.lookup_by_name(this.Config["Address"]);
+				objAddresses = this.objResolver.lookup_by_name(this.mapConfig["Address"]);
 				strAddress = objAddresses.nth_data(0);
 				if(blnSSL == true){
-					this.Socket.set_tls(true);
-					this.Socket.set_tls_validation_flags(0);
+					this.objSocket.set_tls(true);
+					this.objSocket.set_tls_validation_flags(0);
 				}
-				this.Connection = this.Socket.connect(new GLib.InetSocketAddress(strAddress, (uint16)int.parse(intPort)));
-				this.InputStream = new GLib.DataInputStream(this.Connection.input_stream);
-				this.OutputStream = new GLib.DataOutputStream(this.Connection.output_stream);
+				this.objConnection = this.objSocket.connect(new GLib.InetSocketAddress(strAddress, (uint16)int.parse(intPort)));
+				this.objInputStream = new GLib.DataInputStream(this.objConnection.input_stream);
+				this.objOutputStream = new GLib.DataOutputStream(this.objConnection.output_stream);
 			} catch(GLib.Error objError){
 				Logger.Log("Unable to establish connection: " + objError.message, Logger.LogLevel.Fatal);
 			}
 			Logger.Log("Successfully established connection");
 			Logger.Log("Beggining authorization of bot");
-			this.changeNick(this.Nickname);
-			this.sendData("USER " + this.Nickname + " nig nog :" + this.Config["User"]);
-		}
-		
-		public virtual void handleCommand(string strFrom, string strMessage){
-			Logger.Log("You *must* override the handleCommand method in IRCBot.BotBase", Logger.LogLevel.Fatal);
+			this.changeNick(this.strNickname);
+			this.sendData("USER " + this.strNickname + " nig nog :" + this.mapConfig["User"]);
 		}
 		
 		public virtual void parseData(string strData){
@@ -127,30 +150,30 @@ namespace IRCBot {
 			arrData = strData.split(" ");
 			if(arrData[0] == "PING"){
 				this.sendData("PONG " + arrData[1]);
-			} else if(arrData[1] == ":Closing" && arrData[2] == "Link:"){
+			} else if(arrData[1].down() == ":closing" && arrData[2].down() == "link:"){
 				Logger.Log("Remote host closed connection");
 				try {
-					this.Connection.close();
+					this.objConnection.close();
 				} catch(GLib.IOError objError){
 					Logger.Log(objError.message, Logger.LogLevel.Error);
 				}
 			} else if(int.parse(arrData[1]) == 005){
-				this.joinChannel(this.Config["Channel"]);
+				this.joinChannel(this.mapConfig["Channel"]);
 			} else if(int.parse(arrData[1]) == 332){
 				Logger.Log("Topic for " + arrData[3] + " is " + this.buildString(arrData, 4));
+			} else if(int.parse(arrData[1]) == 432){
+				this.sendMessage(this.strLastCommandChannel, "Could not change nick to " + arrData[3] + " (" + this.buildString(arrData, 4) + ")");
 			} else if(arrData[1] == "NICK"){
 				string[] arrUser = arrData[0].split("!");
-				Logger.Log(this.Nickname);
-				Logger.Log(arrUser[0].substring(1));
-				if(arrUser[0].substring(1) == this.Nickname){
-					this.sendMessage(this.lastCommandChannel, "Successfully changed nick to " + arrData[2]);
-					this.Nickname = arrData[2];
-					Logger.Log("Changed nick to " + this.Nickname);
+				if(arrUser[0].substring(1) == this.strNickname){
+					this.sendMessage(this.strLastCommandChannel, "Successfully changed nick to " + arrData[2]);
+					this.strNickname = arrData[2].chomp();
+					Logger.Log("Changed nick to " + this.strNickname);
 				} else {
 					Logger.Log(arrUser[0].substring(1) + " changed their nick to " + arrData[2]);
 				}
 			} else if(arrData[1] == "TOPIC"){
-				Logger.Log("Topic for " + arrData[2] + " changed to " + this.buildString(arrData) + " by " + arrData[0]);
+				Logger.Log("Topic for " + arrData[2] + " changed to \"" + this.buildString(arrData).strip() + "\" by " + arrData[0].substring(1));
 			} else if(arrData[1] == "PRIVMSG"){
 				string strMessage = this.buildString(arrData);
 				bool blnCommand = strMessage.substring(0, 1) == "!" ? true : false;
@@ -165,7 +188,7 @@ namespace IRCBot {
 		public virtual void recvData(){
 			string? strData = null;
 			try {
-				strData = this.InputStream.read_line(null);
+				strData = this.objInputStream.read_line(null);
 			} catch(GLib.IOError objError){
 				Logger.Log(objError.message, Logger.LogLevel.Error);
 			}
@@ -175,9 +198,20 @@ namespace IRCBot {
 			}
 		}
 		
+		public virtual bool scanBlacklist(string strText, bool blnIndex = false){
+			foreach(string strBlack in this.lstArgumentBlackList){
+				if(strText.down() == strBlack.down()){
+					return true;
+				} else if(blnIndex == true && strText.down().index_of(strBlack.down()) > -1){
+					return true;
+				}
+			}
+			return false;
+		}
+		
 		public virtual void sendData(string strData){
 			try {
-				this.OutputStream.put_string(strData + "\r\n");
+				this.objOutputStream.put_string(strData + "\r\n");
 			} catch(GLib.IOError objError){
 				Logger.Log(objError.message, Logger.LogLevel.Error);
 			}
@@ -186,6 +220,10 @@ namespace IRCBot {
 		
 		public virtual void sendMessage(string strChannel, string strMessage){
 			this.sendData("PRIVMSG " + strChannel + " :" + strMessage);
+		}
+		
+		public virtual void sendQuit(string strQuitMessage = "Leaving"){
+			this.sendData("QUIT " + strQuitMessage);
 		}
 		
 	}
