@@ -2,7 +2,10 @@ namespace IRCBot {
 	
 	class Bot : BotBase {
 		
-		public override void handleCommand(string strFrom, string strMessage){
+		private bool blnSinging;
+		private bool blnStopSinging;
+		
+		public override void* handleCommand(string strFrom, string strMessage, string[] arrFull = {}){
 			string[] arrData = strMessage.split(" ");
 			string strCommand = arrData[0].substring(1);
 			Logger.Log("Received command: " + strCommand);
@@ -16,7 +19,6 @@ namespace IRCBot {
 					} catch(GLib.IOError objError){
 						Logger.Log(objError.message, Logger.LogLevel.Error);
 						Posix.exit(0);
-						break;
 					}
 				break;
 				case "FACT":
@@ -32,26 +34,11 @@ namespace IRCBot {
 					this.sendMessage(strFrom, arrFacts[GLib.Random.int_range(0, arrFacts.length)]);
 				break;
 				case "GOOGLE":
-				//	string strResult = Utils.fetch("http://ajax.googleapis.com/ajax/services/search/web?v=1.0&q=" + this.buildString(arrData, 0, true).replace(" ", "+").chomp() + "&userip=lol");
-					var objSession = new Soup.SessionAsync();
-					var objMessage = new Soup.Message("GET", "http://ajax.googleapis.com/ajax/services/search/web?v=1.0&q=" + this.buildString(arrData, 0, true).replace(" ", "+").chomp() + "&userip=lol");
-					objSession.send_message(objMessage);
-					Json.Parser objParser = new Json.Parser();
-					try {
-						objParser.load_from_data((string)objMessage.response_body.flatten().data, -1);
-					} catch(GLib.Error objError){
-						Logger.Log(objError.message);
-						this.sendMessage(strFrom, objError.message);
+					string strPage = Utils.fetch(this.Config["PHPFile"] + "?type=g&q=" + this.buildString(arrData, 1, true));
+					string[] arrResults = strPage.split("\n");
+					for(int intResult = 0; intResult < arrResults.length; intResult++){
+						this.sendMessage(strFrom, arrResults[intResult]);
 					}
-					Json.Object objRoot = objParser.get_root().get_object();
-					var objMember = objRoot.get_object_member("responseData");
-					var objMemberResult = objMember.get_array_member("results");
-					foreach(var objNode in objMemberResult.get_elements()){
-						var objClass = objNode.get_object();
-						this.sendMessage(strFrom, objClass.get_string_member("titleNoFormatting") + " - " + objClass.get_string_member("unescapedUrl"));
-					}
-				//	string strResult = objRoot.get_object_member("responseData").get_string_member("unescapedUrl");
-				//	this.sendMessage(strFrom, strResult);
 				break;
 				case "JOIN":
 					this.joinChannel(arrData[1]);
@@ -72,25 +59,33 @@ namespace IRCBot {
 					string strReply = this.buildString(arrData, 1, true);
 					this.sendMessage(strFrom, strReply);
 				break;
+				case "SHUTUP":
+					if(this.blnSinging == false){
+						this.sendMessage(strFrom, "There is no song being sung");
+					} else {
+						this.blnStopSinging = true;
+					}
+				break;
 				case "SING":
-					string strLyricFile = arrData[1].chomp();
-					bool blnBlacklisted = this.scanBlacklist(strLyricFile, true);
-					if(blnBlacklisted){
-						this.sendMessage(strFrom, "Denied");
-						break;
+					string strAPI = this.Config["MusixAPI"];
+					string strArtist = arrData[1].replace(".", "%20").chomp();
+					string strSong = arrData[2].replace(".", "%20").chomp();
+					string strUrl = this.Config["PHPFile"] + "?type=mm&api=" + strAPI + "&artist=" + strArtist + "&song=" + strSong;
+					string strPage = Utils.fetch(strUrl);
+					Logger.Log(strUrl + " - " + strPage);
+					string[] arrLyrics = strPage.split("\n");
+					this.blnSinging = true;
+					for(int intCount = 0; intCount < arrLyrics.length; intCount++){
+						if(this.blnStopSinging == true){
+							this.sendMessage(strFrom, "Stopping song");
+							this.blnStopSinging = false;
+							break;
+						} else {
+							this.sendMessage(strFrom, arrLyrics[intCount]);
+							Posix.sleep(1);
+						}
 					}
-					string strLyrics;
-					try {
-						GLib.FileUtils.get_contents("Lyrics/" + strLyricFile, out strLyrics);
-					} catch(GLib.FileError objError){
-						Logger.Log(objError.message, Logger.LogLevel.Error);
-						this.sendMessage(strFrom, objError.message);
-						break;
-					}
-					string[] arrLyrics = strLyrics.split("\n");
-					for(int intLyric = 0; intLyric < arrLyrics.length; intLyric++){
-						this.sendMessage(strFrom, arrLyrics[intLyric]);
-					}
+					this.blnSinging = false;
 				break;
 				case "TRANSLATE":
 					string strText = arrData[1].chomp();
@@ -111,15 +106,16 @@ namespace IRCBot {
 					string strUrl = "http://www.urbandictionary.com/define.php?term=" + this.buildString(arrData, 1, true).replace(" ", "+");
 					string strPage = Utils.fetch(strUrl);
 					string strDefinition = Utils.getBetween(strPage, "<meta content='", "'");
-					this.sendMessage(strFrom, strDefinition + (strDefinition.index_of("...") > -1 ? strUrl : ""));
+					this.sendMessage(strFrom, strDefinition + (strDefinition.index_of("...") > -1 ? " " + strUrl : ""));
 				break;
 			}
 			this.lastCommandChannel = strFrom;
+			return null;
 		}
 		
 		public void run(){
 			this.netConnect(this.Config["Address"], this.Config["Port"]);
-			while(true){
+			for(;;){
 				if(this.Connection.is_closed() == true){
 					break;
 				}

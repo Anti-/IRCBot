@@ -1,0 +1,8 @@
+Hello! This is an IRC bot made in Vala by Anti.
+
+To use simply compile all of the .vala files with this command
+valac -o "Bot" *.vala */*.vala --pkg gio-2.0 --pkg posix --pkg gee-1.0 --pkg libsoup-2.4 --pkg json-glib-1.0 --target-glib=2.32
+
+You're going to need a the the dev packages for gee and gio. (in Debian-based machines type apt-cache search PACKAGE to find the development package's name)
+
+There is no documentation (for now), just edit Settings.conf.

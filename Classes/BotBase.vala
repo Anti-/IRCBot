@@ -31,7 +31,10 @@ namespace IRCBot {
 				this.objKeyFile.load_from_file("Settings.conf", GLib.KeyFileFlags.NONE);
 				this.mapConfig["Address"] = this.objKeyFile.get_value("Network", "Address");
 				this.mapConfig["Channel"] = this.objKeyFile.get_value("Network", "Channel");
+				this.mapConfig["MusixAPI"] = this.objKeyFile.get_value("Other", "MusixMatch");
+				this.mapConfig["Pass"] = this.objKeyFile.get_value("Bot", "Pass");
 				this.mapConfig["Port"] = this.objKeyFile.get_value("Network", "Port");
+				this.mapConfig["PHPFile"] = this.objKeyFile.get_value("Other", "PHPFile");
 				this.mapConfig["Real"] = this.objKeyFile.get_value("Bot", "Real");
 				this.mapConfig["SSL"] = this.objKeyFile.get_value("Network", "SSL");
 				this.mapConfig["User"] = this.objKeyFile.get_value("Bot", "User");
@@ -75,10 +78,6 @@ namespace IRCBot {
 			get { return this.objOutputStream; }
 		}
 		
-		public GLib.KeyFile FileParser {
-			get { return this.objKeyFile; }
-		}
-		
 		public GLib.Resolver Resolver {
 			get { return this.objResolver; }
 		}
@@ -99,6 +98,16 @@ namespace IRCBot {
 			this.sendData("NICK " + strNickname);
 		}
 		
+		public virtual bool detectPrivateMessage(string strFrom){
+			if(strFrom.substring(0, 1) != "#") return true;
+			return false;
+		}
+		
+		public virtual string extractNickname(string[] arrData){
+			string[] arrUser = arrData[0].split("!");
+			return arrUser[0].substring(1);
+		}
+		
 		public string googleTranslate(string strText, string strFromLang = "en", string strToLang = "es") throws GLib.Error {
 			string strUri = "http://ajax.googleapis.com/ajax/services/language/translate";
 			string strVersion = "1.0";
@@ -113,12 +122,17 @@ namespace IRCBot {
 			return strTranslated;
 		}
 		
+		public virtual void sendIdentify(string strPassword){
+			this.sendData("NICKSERV IDENTIFY " + strPassword);
+		}
+		
 		public virtual void joinChannel(string strChannel){
 			this.sendData("JOIN " + strChannel);
 		}
 		
-		public virtual void handleCommand(string strFrom, string strMessage){
+		public virtual void* handleCommand(string strFrom, string strMessage, string[] arrFull = {}){
 			Logger.Log("handleCommand must be overridden in a sub-class!", Logger.LogLevel.Fatal);
+			return null;
 		}
 		
 		public virtual void netConnect(string strHost, string intPort){
@@ -146,8 +160,7 @@ namespace IRCBot {
 		}
 		
 		public virtual void parseData(string strData){
-			string[] arrData;
-			arrData = strData.split(" ");
+			string[] arrData = strData.split(" ");
 			if(arrData[0] == "PING"){
 				this.sendData("PONG " + arrData[1]);
 			} else if(arrData[1].down() == ":closing" && arrData[2].down() == "link:"){
@@ -158,29 +171,51 @@ namespace IRCBot {
 					Logger.Log(objError.message, Logger.LogLevel.Error);
 				}
 			} else if(int.parse(arrData[1]) == 005){
+				if(this.mapConfig["Pass"] != ""){
+					this.sendIdentify(this.mapConfig["Pass"]);
+				}
 				this.joinChannel(this.mapConfig["Channel"]);
 			} else if(int.parse(arrData[1]) == 332){
 				Logger.Log("Topic for " + arrData[3] + " is " + this.buildString(arrData, 4));
 			} else if(int.parse(arrData[1]) == 432){
 				this.sendMessage(this.strLastCommandChannel, "Could not change nick to " + arrData[3] + " (" + this.buildString(arrData, 4) + ")");
+			} else if(int.parse(arrData[1]) == 473){
+				this.sendMessage(this.strLastCommandChannel, "Could not join channel.");
+			} else if(int.parse(arrData[1]) == 926){
+				this.sendMessage(this.strLastCommandChannel, "Could not join channel.");
 			} else if(arrData[1] == "NICK"){
-				string[] arrUser = arrData[0].split("!");
-				if(arrUser[0].substring(1) == this.strNickname){
+				string strNick = this.extractNickname(arrData);
+				if(strNick == this.strNickname){
 					this.sendMessage(this.strLastCommandChannel, "Successfully changed nick to " + arrData[2]);
 					this.strNickname = arrData[2].chomp();
 					Logger.Log("Changed nick to " + this.strNickname);
 				} else {
-					Logger.Log(arrUser[0].substring(1) + " changed their nick to " + arrData[2]);
+					Logger.Log(strNick + " changed their nick to " + arrData[2]);
 				}
 			} else if(arrData[1] == "TOPIC"){
 				Logger.Log("Topic for " + arrData[2] + " changed to \"" + this.buildString(arrData).strip() + "\" by " + arrData[0].substring(1));
 			} else if(arrData[1] == "PRIVMSG"){
 				string strMessage = this.buildString(arrData);
 				bool blnCommand = strMessage.substring(0, 1) == "!" ? true : false;
+				bool blnPrivate = this.detectPrivateMessage(arrData[2]);
+				string strFrom = blnPrivate ? this.extractNickname(arrData) : arrData[2];
 				if(blnCommand){
-					this.handleCommand(arrData[2], strMessage);
+					new GLib.Thread<void*>("CommandHandler", () => {
+						return this.handleCommand(strFrom, strMessage, arrData);
+					});
 				} else {
 					Logger.Log("Received message: " + strMessage);
+					if(strMessage.index_of("https://www.youtube.com/watch?v=") > -1 || strMessage.index_of("http://www.youtube.com/watch?v=") > -1){
+						string[] arrUID = strMessage.split("v=");
+						string strUID = arrUID[1];
+						if(strUID.index_of(" ") > -1){
+							string[] arrSplit = strUID.split(" ");
+							strUID = arrSplit[0];
+						}
+						string strPage = Utils.fetch("http://www.youtube.com/watch?v=" + strUID);
+						string strTitle = Utils.getBetween(strPage, "<meta name=\"description\" content=\"", "\">");
+						this.sendMessage(arrData[2], strTitle);
+					}
 				}
 			}
 		}
@@ -215,7 +250,7 @@ namespace IRCBot {
 			} catch(GLib.IOError objError){
 				Logger.Log(objError.message, Logger.LogLevel.Error);
 			}
-		//	Logger.Log("Sending data: " + strData, Logger.LogLevel.Debug);
+			Logger.Log("Sending data: " + strData, Logger.LogLevel.Debug);
 		}
 		
 		public virtual void sendMessage(string strChannel, string strMessage){
